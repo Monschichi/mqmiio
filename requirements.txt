@@ -1,0 +1,2 @@
+paho-mqtt
+python-miio @ git+https://github.com/rytilahti/python-miio.git@0.6.0.dev0

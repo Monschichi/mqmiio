@@ -1,56 +1,61 @@
-from paho.mqtt import client as mqtt_client
-import random
 import time
+from typing import Any
+
+import paho.mqtt.client as mqtt_client
+from miio.device import Device
+
 
 class MiioMqtt:
-    def __init__(self, device, host, port, clientid, topic):
-        self.closed = False
+    def __init__(self, device: Device, host: str, port: int, username: str, password: str, clientid: str, topic: str) -> None:
         self.device = device
         self.host = host
         self.port = port
+        self.username = username
+        self.password = password
         self.topic = topic
         self.client_id = clientid
         self.client = self._connect()
         self.client.miiomqtt = self
         self.publish_req = False
-        self.mapping_topic_setting = {}
+        self.mapping_topic_setting: dict[str, Any] = {}
         self._subscribe()
+        self._publish(self.topic + '/connection', 'connected')
         self.client.loop_start()
 
-    def close(self):
-        self.closed = True
+    def close(self) -> None:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish_requested(self):
-        val = self.publish_req
-        self.publish_req = False
-        return val
+    def publish_requested(self) -> bool:
+        if self.publish_req:
+            self.publish_req = False
+            return True
+        else:
+            return False
 
-    def _connect(self):
-        def on_connect(client, userdata, flags, rc):
-            if rc == 0:
-                print("Connected to MQTT Broker.")
-                client.miiomqtt._subscribe()
+    def _connect(self) -> mqtt_client.Client:
+        def on_connect(mqttc, obj, flags, reason_code, properties):
+            if reason_code == 0:
+                print('Connected to MQTT Broker.')
+                mqttc.miiomqtt._subscribe()
             else:
-                print("Failed to connect to MQTT Broker, return code %d\n", rc)
+                print('Failed to connect to MQTT Broker, return code %d\n', reason_code)
 
         # Set Connecting Client ID
-        client = mqtt_client.Client(self.client_id)
+        client = mqtt_client.Client(client_id=self.client_id, protocol=mqtt_client.MQTTv5)
         client.on_connect = on_connect
         client.on_disconnect = self._on_disconnect
 
         success = False
 
         while not success:
-            if self.closed:
-                return None
-
             try:
-                client.connect(self.host, self.port)
+                client.username_pw_set(username=self.username, password=self.password)
+                client.will_set(self.topic + '/connection', 'disconnected', 2, False)
+                client.connect(host=self.host, port=self.port)
                 success = True
             except ConnectionError as err:
-                print(f"Failed to connect to broker {err}. Retry in 10 seconds.")
+                print(f'Failed to connect to broker {err}. Retry in 10 seconds.')
                 time.sleep(10)
 
         return client
@@ -59,55 +64,39 @@ class MiioMqtt:
         settings = self.device.settings()
 
         for setting in settings:
-            setter = settings[setting].setter
-            siid = setter.args[0]
-            piid = setter.args[1]
-
-            topic = self.topic + "/" + setting.replace(":", "/").replace(".", "_")
-            self.client.subscribe(topic)
+            topic = self.topic + '/' + setting.replace(':', '/').replace('.', '_')
+            self.client.subscribe(topic=topic, qos=2)
             self.mapping_topic_setting[topic] = setting
 
         self.client.on_message = self._on_message
 
-    def _on_disconnect(self, userdata, rc, data):
-        if self.closed:
-            return
-
-        reconnect_delay = 10
+    def _on_disconnect(self, userdata, rc, data, properties):
+        reconnect_delay = 5
         client = self.client
 
-        print("Disconnected with result code: %s", rc)
+        print(f'Disconnected with result code: {rc}')
         while True:
-            if self.closed:
-                return
-
-            print("Reconnecting in %d seconds...", reconnect_delay)
+            print(f'Reconnecting in {reconnect_delay} seconds...')
             time.sleep(reconnect_delay)
 
             try:
                 client.reconnect()
-                print("Reconnected successfully!")
+                print('Reconnected successfully!')
                 return
             except Exception as err:
-                print("%s. Reconnect failed. Retrying...", err)
+                print(f'{err}. Reconnect failed. Retrying...')
 
         # print.info("Reconnect failed after %s attempts. Exiting...", reconnect_count)
 
     def publish_status(self):
-        if self.closed:
-            return
-
         devStatus = self.device.status()
         for attr in devStatus.data:
             value = str(getattr(devStatus, attr))
-            topic = self.topic + "/" + attr.replace(":", "/").replace(".", "_")
+            topic = self.topic + '/' + attr.replace(':', '/').replace('.', '_')
 
             self._publish(topic, value)
 
     def publish_setting(self):
-        if self.closed:
-            return
-
         settings = self.device.settings()
 
         for setting in settings:
@@ -115,20 +104,11 @@ class MiioMqtt:
             siid = setter.args[0]
             piid = setter.args[1]
             valueObj = self.device.get_property_by(siid, piid)[0]
-
-            topic = self.topic + "/" + setting.replace(":", "/").replace(".", "_")
-
-            value = valueObj["value"]
-
-            if isinstance(value, bool):
-                self._publish(topic, "true" if value else "false")
-            else:
-                self._publish(topic, str(value))
+            topic = self.topic + '/' + setting.replace(':', '/').replace('.', '_')
+            value = valueObj['value']
+            self._publish(topic, str(value))
 
     def _on_message(client, userdata, msg, data):
-        if client.closed:
-            return
-
         self = userdata.miiomqtt
         settings = self.device.settings()
         settingName = self.mapping_topic_setting[data.topic]
@@ -138,9 +118,9 @@ class MiioMqtt:
         siid = setting.setter.args[0]
         piid = setting.setter.args[1]
         valueObj = self.device.get_property_by(siid, piid)[0]
-        current_value = valueObj["value"]
+        current_value = valueObj['value']
 
-        if "bool" in str(setting.type):
+        if 'bool' in str(setting.type):
             value = False
             if payload.lower() == b'true':
                 value = True
@@ -149,7 +129,7 @@ class MiioMqtt:
                 print(f'bool value {settingName} change from {current_value} to {value}')
                 setting.setter(value)
                 self.publish_req = True
-        elif "int" in str(setting.type):
+        elif 'int' in str(setting.type):
             value = int(payload)
 
             if value != current_value:

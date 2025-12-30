@@ -1,43 +1,55 @@
-from miio import DeviceFactory, DeviceException
-from configparser import ConfigParser
-import time
-import miiomqtt
+#!/usr/bin/env python3
+import argparse
+import os
 import signal
+import time
+from configparser import ConfigParser
+
+from miio.devicefactory import DeviceFactory
+from miio.exceptions import DeviceException
+
+import miiomqtt
+
 
 def handler(signum, frame):
-    print("Shutting down")
+    print('Shutting down')
     try:
         mqtt.close()
     except NameError:
         print()
+    raise SystemExit(2)
 
-    exit(0)
 
 if __name__ == '__main__':
-    error_count = 0
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        '--config', help='config file',
+        default=os.path.join(os.getcwd(), 'mqmiio.cfg'),
+        type=str,
+    )
+    args = parser.parse_args()
 
     signal.signal(signal.SIGINT, handler)
 
     # Read config
     config = ConfigParser()
-    config.read('/etc/mqmiio.cfg')
+    config.read(args.config)
 
     # Initialize device
     host = config.get('miio', 'host')
     token = config.get('miio', 'token')
 
-    success = False
-
-    while not success:
+    dev = None
+    error_count = 0
+    while dev is None:
         try:
             dev = DeviceFactory.create(host, token, None, force_generic_miot=True)
-            success = True
         except DeviceException as err:
             error_count = error_count + 1
             if error_count > 20:
-                print(f"Failed to connect to device, terminating.")
-                exit(0)
-            print(f"Failed to connect to MIoT device. Retry in 10 seconds. {err}")
+                print('Failed to connect to device, terminating.')
+                raise SystemExit(1)
+            print(f'Failed to connect to MIoT device. Retry in 10 seconds. {err}')
             time.sleep(10)
 
     # Initialize broker
@@ -45,35 +57,35 @@ if __name__ == '__main__':
     mqtt_port = int(config.get('mqtt', 'port'))
     mqtt_topic = config.get('mqtt', 'topic')
     mqtt_clientid = config.get('mqtt', 'clientid')
+    mqtt_username = config.get('mqtt', 'username')
+    mqtt_password = config.get('mqtt', 'password')
 
-    mqtt = miiomqtt.MiioMqtt(dev, mqtt_host, mqtt_port, mqtt_clientid, mqtt_topic)
+    mqtt = miiomqtt.MiioMqtt(dev, mqtt_host, mqtt_port, mqtt_username, mqtt_password, mqtt_clientid, mqtt_topic)
 
-    lastPubTime = 0
+    lastPubTime: float = 0
+    lastSetTime: float = 0
 
     while True:
-        current_time = time.time()
-
-        if current_time - lastPubTime > 3 or mqtt.publish_requested():
+        if time.time() - lastPubTime > 5 or mqtt.publish_requested():
             try:
-                devStatus = dev.status()
-
-                for attr in devStatus.data:
-                    print(attr + ": " + str(getattr(devStatus, attr)))
-                print("--")
-
                 mqtt.publish_status()
-                mqtt.publish_setting()
-
                 lastPubTime = time.time()
+                error_count = 0
             except DeviceException as err:
                 error_count = error_count + 1
-                print(f"Error occured communicating with the MIoT device: {err}")
+                print(f'Error occured communicating with the MIoT device: {err}')
+
+        if time.time() - lastSetTime > 60 or mqtt.publish_requested():
+            try:
+                mqtt.publish_setting()
+
+                lastSetTime = time.time()
+            except DeviceException as err:
+                error_count = error_count + 1
+                print(f'Error occured communicating with the MIoT device: {err}')
 
         if error_count > 20:
-                print(f"Failed to reconnect to device, terminating.")
-                exit(0)
+            print('Failed to reconnect to device, terminating.')
+            raise SystemExit(3)
 
-        time.sleep(0.5)
-
-
-
+        time.sleep(1)
