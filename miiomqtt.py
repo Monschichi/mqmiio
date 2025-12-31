@@ -5,6 +5,7 @@ from typing import Any
 import paho.mqtt.client as mqtt_client
 from miio.device import Device
 from miio.miot_device import MiotDevice
+from paho.mqtt.subscribeoptions import SubscribeOptions
 
 
 class MiioMqtt:
@@ -56,11 +57,12 @@ class MiioMqtt:
         return client
 
     def _subscribe(self):
+        subOptions = SubscribeOptions(qos=2, noLocal=True)
         settings = self.device.settings()
 
         for setting in settings:
             topic = self.topic + '/' + setting.replace(':', '/').replace('.', '_')
-            self.client.subscribe(topic=topic, qos=2)
+            self.client.subscribe(topic=topic, options=subOptions)
             self.mapping_topic_setting[topic] = setting
 
         self.client.on_message = self._on_message
