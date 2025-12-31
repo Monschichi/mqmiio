@@ -134,6 +134,6 @@ class MiioMqtt:
                 self._publish(msg.topic, str(newvalueObj['value']))
 
     def _publish(self, topic, message):
-        result = self.client.publish(topic, message)
+        result = self.client.publish(topic, message.lower())
         status = result[0]
         return status
