@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import datetime
+import logging
 import os
 import signal
 import time
@@ -12,22 +14,29 @@ import miiomqtt
 
 
 def handler(signum, frame):
-    print('Shutting down')
+    logging.error('Shutting down')
     try:
         mqtt.close()
     except NameError:
-        print()
+        pass
     raise SystemExit(2)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
+        '--verbose', action='store_const', dest='loglevel', const=logging.INFO, default=logging.WARNING,
+        help='enable info logging',
+    )
+    parser.add_argument('--debug', action='store_const', dest='loglevel', const=logging.DEBUG, help='enable debug logging')
+    parser.add_argument(
         '--config', help='config file',
         default=os.path.join(os.getcwd(), 'mqmiio.cfg'),
         type=str,
     )
     args = parser.parse_args()
+
+    logging.basicConfig(format='%(asctime)s [%(levelname)s] - %(filename)s:%(lineno)d - %(message)s', level=args.loglevel)
 
     signal.signal(signal.SIGINT, handler)
 
@@ -40,16 +49,11 @@ if __name__ == '__main__':
     token = config.get('miio', 'token')
 
     dev = None
-    error_count = 0
     while dev is None:
         try:
             dev = DeviceFactory.create(host, token, None, force_generic_miot=True)
         except DeviceException as err:
-            error_count = error_count + 1
-            if error_count > 20:
-                print('Failed to connect to device, terminating.')
-                raise SystemExit(1)
-            print(f'Failed to connect to MIoT device. Retry in 10 seconds. {err}')
+            logging.error(f'Failed to connect to MIoT device. Retry in 10 seconds. {err}')
             time.sleep(10)
 
     # Initialize broker
@@ -62,30 +66,20 @@ if __name__ == '__main__':
 
     mqtt = miiomqtt.MiioMqtt(dev, mqtt_host, mqtt_port, mqtt_username, mqtt_password, mqtt_clientid, mqtt_topic)
 
-    lastPubTime: float = 0
-    lastSetTime: float = 0
-
+    mqtt.publish_status()
+    mqtt.publish_setting()
     while True:
-        if time.time() - lastPubTime > 5 or mqtt.publish_requested():
-            try:
-                mqtt.publish_status()
-                lastPubTime = time.time()
-                error_count = 0
-            except DeviceException as err:
-                error_count = error_count + 1
-                print(f'Error occured communicating with the MIoT device: {err}')
+        try:
+            mqtt.publish_status()
+        except DeviceException as err:
+            logging.error(f'Error occured communicating with the MIoT device: {err}')
 
-        if time.time() - lastSetTime > 60 or mqtt.publish_requested():
+        if datetime.datetime.now().minute % 5 == 0:
             try:
                 mqtt.publish_setting()
-
-                lastSetTime = time.time()
             except DeviceException as err:
-                error_count = error_count + 1
-                print(f'Error occured communicating with the MIoT device: {err}')
+                logging.error(f'Error occured communicating with the MIoT device: {err}')
 
-        if error_count > 20:
-            print('Failed to reconnect to device, terminating.')
-            raise SystemExit(3)
-
-        time.sleep(1)
+        s = 60 - (datetime.datetime.now().second % 60)
+        logging.info(f'sleeping {s} seconds')
+        time.sleep(s)

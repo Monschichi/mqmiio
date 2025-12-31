@@ -1,12 +1,14 @@
+import logging
 import time
 from typing import Any
 
 import paho.mqtt.client as mqtt_client
 from miio.device import Device
+from miio.miot_device import MiotDevice
 
 
 class MiioMqtt:
-    def __init__(self, device: Device, host: str, port: int, username: str, password: str, clientid: str, topic: str) -> None:
+    def __init__(self, device: 'MiotDevice | Device', host: str, port: int, username: str, password: str, clientid: str, topic: str) -> None:
         self.device = device
         self.host = host
         self.port = port
@@ -16,7 +18,6 @@ class MiioMqtt:
         self.client_id = clientid
         self.client = self._connect()
         self.client.miiomqtt = self
-        self.publish_req = False
         self.mapping_topic_setting: dict[str, Any] = {}
         self._subscribe()
         self._publish(self.topic + '/connection', 'connected')
@@ -26,20 +27,13 @@ class MiioMqtt:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish_requested(self) -> bool:
-        if self.publish_req:
-            self.publish_req = False
-            return True
-        else:
-            return False
-
     def _connect(self) -> mqtt_client.Client:
         def on_connect(mqttc, obj, flags, reason_code, properties):
             if reason_code == 0:
-                print('Connected to MQTT Broker.')
+                logging.info('Connected to MQTT Broker.')
                 mqttc.miiomqtt._subscribe()
             else:
-                print('Failed to connect to MQTT Broker, return code %d\n', reason_code)
+                logging.error('Failed to connect to MQTT Broker, return code %d\n', reason_code)
 
         # Set Connecting Client ID
         client = mqtt_client.Client(client_id=self.client_id, protocol=mqtt_client.MQTTv5)
@@ -52,10 +46,10 @@ class MiioMqtt:
             try:
                 client.username_pw_set(username=self.username, password=self.password)
                 client.will_set(self.topic + '/connection', 'disconnected', 2, False)
-                client.connect(host=self.host, port=self.port)
+                client.connect(host=self.host, port=self.port, keepalive=60)
                 success = True
             except ConnectionError as err:
-                print(f'Failed to connect to broker {err}. Retry in 10 seconds.')
+                logging.error(f'Failed to connect to broker {err}. Retry in 10 seconds.')
                 time.sleep(10)
 
         return client
@@ -74,19 +68,19 @@ class MiioMqtt:
         reconnect_delay = 5
         client = self.client
 
-        print(f'Disconnected with result code: {rc}')
+        logging.error(f'Disconnected with result code: {rc}')
+        if rc is None:
+            return
         while True:
-            print(f'Reconnecting in {reconnect_delay} seconds...')
+            logging.warning(f'Reconnecting in {reconnect_delay} seconds...')
             time.sleep(reconnect_delay)
 
             try:
                 client.reconnect()
-                print('Reconnected successfully!')
+                logging.info('Reconnected successfully!')
                 return
             except Exception as err:
-                print(f'{err}. Reconnect failed. Retrying...')
-
-        # print.info("Reconnect failed after %s attempts. Exiting...", reconnect_count)
+                logging.error(f'{err}. Reconnect failed. Retrying...')
 
     def publish_status(self):
         devStatus = self.device.status()
@@ -126,16 +120,18 @@ class MiioMqtt:
                 value = True
 
             if value != current_value:
-                print(f'bool value {settingName} change from {current_value} to {value}')
+                logging.info(f'bool value {settingName} changed from {current_value} to {value}')
                 setting.setter(value)
-                self.publish_req = True
+                newvalueObj = self.device.get_property_by(siid, piid)[0]
+                self._publish(data.topic, str(newvalueObj['value']))
         elif 'int' in str(setting.type):
             value = int(payload)
 
             if value != current_value:
-                print(f'int value {settingName} change from {current_value} to {value}')
+                logging.info(f'int value {settingName} changed from {current_value} to {value}')
                 setting.setter(value)
-                self.publish_req = True
+                newvalueObj = self.device.get_property_by(siid, piid)[0]
+                self._publish(data.topic, str(newvalueObj['value']))
 
     def _publish(self, topic, message):
         result = self.client.publish(topic, message)
