@@ -24,6 +24,7 @@ class MiioMqtt:
         self.client.loop_start()
 
     def close(self) -> None:
+        self._publish(self.topic + '/connection', 'disconnected')
         self.client.loop_stop()
         self.client.disconnect()
 
@@ -102,12 +103,11 @@ class MiioMqtt:
             value = valueObj['value']
             self._publish(topic, str(value))
 
-    def _on_message(client, userdata, msg, data):
-        self = userdata.miiomqtt
+    def _on_message(self, client, userdata, msg):
         settings = self.device.settings()
-        settingName = self.mapping_topic_setting[data.topic]
+        settingName = self.mapping_topic_setting[msg.topic]
         setting = settings[settingName]
-        payload = data.payload
+        payload = msg.payload
 
         siid = setting.setter.args[0]
         piid = setting.setter.args[1]
@@ -123,7 +123,7 @@ class MiioMqtt:
                 logging.info(f'bool value {settingName} changed from {current_value} to {value}')
                 setting.setter(value)
                 newvalueObj = self.device.get_property_by(siid, piid)[0]
-                self._publish(data.topic, str(newvalueObj['value']))
+                self._publish(msg.topic, str(newvalueObj['value']))
         elif 'int' in str(setting.type):
             value = int(payload)
 
@@ -131,7 +131,7 @@ class MiioMqtt:
                 logging.info(f'int value {settingName} changed from {current_value} to {value}')
                 setting.setter(value)
                 newvalueObj = self.device.get_property_by(siid, piid)[0]
-                self._publish(data.topic, str(newvalueObj['value']))
+                self._publish(msg.topic, str(newvalueObj['value']))
 
     def _publish(self, topic, message):
         result = self.client.publish(topic, message)
